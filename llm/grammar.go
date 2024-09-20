@@ -4,11 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"strings"
-
-	"github.com/ollama/ollama/format"
 )
 
-var maxGrammarSize = 32 * format.KiloByte
+var maxGrammarSize = 32 * 1000
 
 // a cache that stores max 100 grammars
 var grammarValidationCache = make(map[string]error)
@@ -137,6 +135,7 @@ const (
 	TokenTerminal
 	TokenCharacterClass
 	TokenNonTerminal
+	TokenQuantifier
 )
 
 type Token struct {
@@ -245,6 +244,38 @@ func validateCharacterClass(charClass string) error {
 		}
 	}
 
+	return nil
+}
+
+// Quantifiers can be of the form {n}, {n,}, {n,m}
+func validateQuantifier(quantifier string) error {
+	opened := false
+	closed := false
+	for _, c := range quantifier {
+		if c == ' ' {
+			continue
+		}
+		if c == '{' {
+			if opened {
+				return fmt.Errorf("multiple opening braces in quantifier '%s'", quantifier)
+			}
+			opened = true
+		} else if c == '}' {
+			if closed {
+				return fmt.Errorf("multiple closing braces in quantifier '%s'", quantifier)
+			}
+			closed = true
+		} else if c != ',' && !isDigit(c) {
+			return fmt.Errorf("invalid character '%c' in quantifier '%s'", c, quantifier)
+		} else {
+			if !opened {
+				return fmt.Errorf("missing opening brace in quantifier '%s'", quantifier)
+			}
+			if closed {
+				return fmt.Errorf("unexpected character '%c' after closing brace in quantifier '%s'", c, quantifier)
+			}
+		}
+	}
 	return nil
 }
 
@@ -359,6 +390,27 @@ func parseRule(rule string) ([]Token, error) {
 		case rule[i] == '?':
 			tokens = append(tokens, Token{Type: TokenQuestion, Value: string(rule[i])})
 			i++
+		case rule[i] == '{':
+			// Quantifier
+			start := i
+			i++
+			for i < n {
+				if rule[i] == '}' && rule[i-1] != '\\' {
+					i++
+					break
+				}
+				i++
+			}
+			if i <= n {
+				quantifier := rule[start:i]
+				if err := validateQuantifier(quantifier); err == nil {
+					tokens = append(tokens, Token{Type: TokenQuantifier, Value: rule[start:i]})
+				} else {
+					return nil, fmt.Errorf("invalid quantifier: %s", err)
+				}
+			} else {
+				return nil, fmt.Errorf("unclosed quantifier")
+			}
 		case rule[i] == '"':
 			// Terminal sequence with escaped quotes handling
 			start := i
@@ -386,7 +438,7 @@ func parseRule(rule string) ([]Token, error) {
 		default:
 			// Non-terminal or literal character
 			start := i
-			for i < n && !strings.ContainsRune(" |()[]*+?", rune(rule[i])) {
+			for i < n && !strings.ContainsRune(" |()[]*+?{}", rune(rule[i])) {
 				i++
 			}
 			// Check if it is a valid rule name or character class
