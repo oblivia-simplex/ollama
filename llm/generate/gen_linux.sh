@@ -205,7 +205,7 @@ if [ -z "${OLLAMA_SKIP_CUDA_GENERATE}" -a -d "${CUDA_LIB_DIR}" ]; then
     echo "Installing CUDA dependencies in ${CUDA_DIST_DIR}"
     mkdir -p "${CUDA_DIST_DIR}"
     for lib in ${CUDA_LIB_DIR}/libcudart.so* ${CUDA_LIB_DIR}/libcublas.so* ${CUDA_LIB_DIR}/libcublasLt.so* ; do
-        cp -a "${lib}" "${CUDA_DIST_DIR}"
+        cp -dR "${lib}" "${CUDA_DIST_DIR}"
     done
     compress
 
@@ -232,7 +232,7 @@ if [ -z "${OLLAMA_SKIP_ONEAPI_GENERATE}" -a -d "${ONEAPI_ROOT}" ]; then
     # copy oneAPI dependencies
     mkdir -p "${ONEAPI_DIST_DIR}"
     for dep in $(ldd "${BUILD_DIR}/bin/ollama_llama_server" | grep "=>" | cut -f2 -d= | cut -f2 -d' ' | grep -e sycl -e mkl -e tbb); do
-        cp -a "${dep}" "${ONEAPI_DIST_DIR}"
+        cp -dR "${dep}" "${ONEAPI_DIST_DIR}"
     done
     cp "${ONEAPI_ROOT}/compiler/latest/lib/libOpenCL.so" "${ONEAPI_DIST_DIR}"
     cp "${ONEAPI_ROOT}/compiler/latest/lib/libimf.so" "${ONEAPI_DIST_DIR}"
@@ -283,7 +283,7 @@ if [ -z "${OLLAMA_SKIP_ROCM_GENERATE}" -a -d "${ROCM_PATH}" ]; then
     # copy the ROCM dependencies
     mkdir -p "${ROCM_DIST_DIR}"
     for dep in $(ldd "${BUILD_DIR}/bin/ollama_llama_server" | grep "=>" | cut -f2 -d= | cut -f2 -d' ' | grep -v "${GOARCH}/rocm${ROCM_VARIANT}" | grep -e rocm -e amdgpu -e libtinfo -e libnuma -e libelf ); do
-        cp -a "${dep}"* "${ROCM_DIST_DIR}"
+        cp -dR "${dep}"* "${ROCM_DIST_DIR}"
         if [ $(readlink -f "${dep}") != "${dep}" ] ; then
             cp $(readlink -f "${dep}") "${ROCM_DIST_DIR}"
         fi

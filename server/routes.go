@@ -248,6 +248,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Images:  images,
 			Format:  req.Format,
 			Options: opts,
+			Grammar: req.Grammar,
 		}, func(cr llm.CompletionResponse) {
 			res := api.GenerateResponse{
 				Model:      req.Model,
@@ -281,26 +282,6 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				}
 			}
 
-			ch <- resp
-		}
-
-		var images []llm.ImageData
-		for i := range req.Images {
-			images = append(images, llm.ImageData{
-				ID:   i,
-				Data: req.Images[i],
-			})
-		}
-
-		// Start prediction
-		req := llm.CompletionRequest{
-			Prompt:  prompt,
-			Format:  req.Format,
-			Grammar: req.Grammar,
-			Images:  images,
-			Options: opts,
-		}
-		if err := runner.llama.Completion(c.Request.Context(), req, fn); err != nil {
 			ch <- res
 		}); err != nil {
 			ch <- gin.H{"error": err.Error()}
@@ -1444,6 +1425,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			Images:  images,
 			Format:  req.Format,
 			Options: opts,
+			Grammar: req.Grammar,
 		}, func(r llm.CompletionResponse) {
 			res := api.ChatResponse{
 				Model:      req.Model,
@@ -1464,16 +1446,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 			}
 
-			ch <- resp
-		}
-
-		if err := runner.llama.Completion(c.Request.Context(), llm.CompletionRequest{
-			Prompt:  prompt,
-			Format:  req.Format,
-			Grammar: req.Grammar,
-			Images:  images,
-			Options: opts,
-		}, fn); err != nil {
+			ch <- res
+		}); err != nil {
 			ch <- gin.H{"error": err.Error()}
 		}
 	}()
