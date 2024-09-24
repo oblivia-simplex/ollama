@@ -5,14 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 )
 
@@ -59,9 +62,9 @@ func AMDGetGPUInfo() []RocmGPUInfo {
 
 	// Determine if the user has already pre-selected which GPUs to look at, then ignore the others
 	var visibleDevices []string
-	hipVD := os.Getenv("HIP_VISIBLE_DEVICES")   // zero based index only
-	rocrVD := os.Getenv("ROCR_VISIBLE_DEVICES") // zero based index or UUID, but consumer cards seem to not support UUID
-	gpuDO := os.Getenv("GPU_DEVICE_ORDINAL")    // zero based index
+	hipVD := envconfig.HipVisibleDevices()   // zero based index only
+	rocrVD := envconfig.RocrVisibleDevices() // zero based index or UUID, but consumer cards seem to not support UUID
+	gpuDO := envconfig.GpuDeviceOrdinal()    // zero based index
 	switch {
 	// TODO is this priorty order right?
 	case hipVD != "":
@@ -74,13 +77,27 @@ func AMDGetGPUInfo() []RocmGPUInfo {
 		visibleDevices = strings.Split(gpuDO, ",")
 	}
 
-	gfxOverride := os.Getenv("HSA_OVERRIDE_GFX_VERSION")
+	gfxOverride := envconfig.HsaOverrideGfxVersion()
 	var supported []string
 	libDir := ""
 
 	// The amdgpu driver always exposes the host CPU(s) first, but we have to skip them and subtract
 	// from the other IDs to get alignment with the HIP libraries expectations (zero is the first GPU, not the CPU)
 	matches, _ := filepath.Glob(GPUPropertiesFileGlob)
+	sort.Slice(matches, func(i, j int) bool {
+		// /sys/class/kfd/kfd/topology/nodes/<number>/properties
+		a, err := strconv.ParseInt(filepath.Base(filepath.Dir(matches[i])), 10, 64)
+		if err != nil {
+			slog.Debug("parse err", "error", err, "match", matches[i])
+			return false
+		}
+		b, err := strconv.ParseInt(filepath.Base(filepath.Dir(matches[j])), 10, 64)
+		if err != nil {
+			slog.Debug("parse err", "error", err, "match", matches[i])
+			return false
+		}
+		return a < b
+	})
 	cpuCount := 0
 	for _, match := range matches {
 		slog.Debug("evaluating amdgpu node " + match)
@@ -332,11 +349,20 @@ func AMDGetGPUInfo() []RocmGPUInfo {
 			slog.Info("skipping rocm gfx compatibility check", "HSA_OVERRIDE_GFX_VERSION", gfxOverride)
 		}
 
+		// Check for env var workarounds
+		if name == "1002:687f" { // Vega RX 56
+			gpuInfo.EnvWorkarounds = append(gpuInfo.EnvWorkarounds, [2]string{"HSA_ENABLE_SDMA", "0"})
+		}
+
 		// The GPU has passed all the verification steps and is supported
 		resp = append(resp, gpuInfo)
 	}
 	if len(resp) == 0 {
 		slog.Info("no compatible amdgpu devices detected")
+	}
+	if err := verifyKFDDriverAccess(); err != nil {
+		slog.Error("amdgpu devices detected but permission problems block access", "error", err)
+		return nil
 	}
 	return resp
 }
@@ -372,7 +398,7 @@ func AMDValidateLibDir() (string, error) {
 
 	// If we still haven't found a usable rocm, the user will have to install it on their own
 	slog.Warn("amdgpu detected, but no compatible rocm library found.  Either install rocm v6, or follow manual install instructions at https://github.com/ollama/ollama/blob/main/docs/linux.md#manual-install")
-	return "", fmt.Errorf("no suitable rocm found, falling back to CPU")
+	return "", errors.New("no suitable rocm found, falling back to CPU")
 }
 
 func AMDDriverVersion() (driverMajor, driverMinor int, err error) {
@@ -433,4 +459,20 @@ func getFreeMemory(usedFile string) (uint64, error) {
 		return 0, fmt.Errorf("failed to parse sysfs node %s %w", usedFile, err)
 	}
 	return usedMemory, nil
+}
+
+func verifyKFDDriverAccess() error {
+	// Verify we have permissions - either running as root, or we have group access to the driver
+	fd, err := os.OpenFile("/dev/kfd", os.O_RDWR, 0o666)
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("permissions not set up properly.  Either run ollama as root, or add you user account to the render group. %w", err)
+		} else if errors.Is(err, fs.ErrNotExist) {
+			// Container runtime failure?
+			return fmt.Errorf("kfd driver not loaded.  If running in a container, remember to include '--device /dev/kfd --device /dev/dri'")
+		}
+		return fmt.Errorf("failed to check permission on /dev/kfd: %w", err)
+	}
+	fd.Close()
+	return nil
 }
